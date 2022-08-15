@@ -24,128 +24,187 @@
 
 namespace Mittwald\Typo3Forum\Updates;
 
+use Symfony\Component\Console\Output\OutputInterface;
 use TYPO3\CMS\Core\Database\Connection;
 use TYPO3\CMS\Core\Database\ConnectionPool;
 use TYPO3\CMS\Core\Database\Query\Expression\ExpressionBuilder;
+use TYPO3\CMS\Core\Registry;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Install\Updates\AbstractUpdate;
+use TYPO3\CMS\Install\Updates\DatabaseUpdatedPrerequisite;
 
 /**
  * Update wizard to migrate anonymous posts without an authorName to have 'Anonymous' as authorName instead and authorNames with less than 3 chars to have
  * 'Anonymous: ' prepended.
  * This is necessary to avoid validation issues for old posts - the authorName validation was disabled for a longer time and has been re-enabled.
  */
-class PostsWithoutAuthorNameUpdate extends AbstractUpdate
+class PostsWithoutAuthorNameUpdate implements \TYPO3\CMS\Install\Updates\UpgradeWizardInterface,
+	\TYPO3\CMS\Install\Updates\ChattyInterface
 {
+	/**
+	 * @var OutputInterface
+	 */
+	protected $output;
 
-    /**
-     * @var string
-     */
-    protected $title = '[typo3_forum]: Migrate anonymous posts to have a valid author_name';
+	/**
+	 * Returns the title attribute
+	 *
+	 * @return string The title of this update wizard
+	 */
+	public function getTitle(): string
+	{
+		return '[typo3_forum]: Migrate anonymous posts to have a valid author_name';
+	}
+	/**
+	 * Returns the identifier of this class
+	 *
+	 * @return string The identifier of this update wizard
+	 */
+	public function getIdentifier(): string
+	{
+		return static::class;
+	}
 
-    /**
-     * Checks whether updates are required.
-     *
-     * @param string &$description The description for the update
-     * @return bool Whether an update is required (TRUE) or not (FALSE)
-     */
-    public function checkForUpdate(&$description)
-    {
-        if ($this->isWizardDone()) {
-            return false;
-        }
+	/**
+	 * Returns an array of class names of Prerequisite classes
+	 * This way a wizard can define dependencies like "database up-to-date" or
+	 * "reference index updated"
+	 *
+	 * @return string[]
+	 */
+	public function getPrerequisites(): array
+	{
+		return [
+			DatabaseUpdatedPrerequisite::class
+		];
+	}
 
-        $description = 'Migrate anonymous posts to have a valid author name with three or more characters by setting "Anonymous" for empty author name and
+	/**
+	 * Return the description for this wizard
+	 *
+	 * @return string
+	 */
+	public function getDescription(): string
+	{
+		return 'Migrate anonymous posts to have a valid author name with three or more characters by setting "Anonymous" for empty author name and
 		 prepending "Anonymous: " to author name if consisting of one or two characters.';
+	}
 
-        return $this->hasPostsToUpdate();
-    }
+	/**
+	 * Checks whether updates are required.
+	 *
+	 * @return bool Whether an update is required (TRUE) or not (FALSE)
+	 */
+	public function updateNecessary(): bool
+	{
+		return $this->hasPostsToUpdate();
+	}
 
-    /**
-     * Performs the accordant updates.
-     *
-     * @param array &$databaseQueries Queries done in this update
-     * @param string &$customMessage Custom message
-     * @return bool Whether everything went smoothly or not
-     */
-    public function performUpdate(array &$databaseQueries, &$customMessage): bool
-    {
-        $connectionPool = GeneralUtility::makeInstance(ConnectionPool::class);
+	/**
+	 * Performs the accordant updates.
+	 *
+	 * @param array &$databaseQueries Queries done in this update
+	 * @param string &$customMessage Custom message
+	 * @return bool Whether everything went smoothly or not
+	 */
+	public function executeUpdate(): bool
+	{
+		$connectionPool = GeneralUtility::makeInstance(ConnectionPool::class);
 
-        // Update empty authorNames
-        $queryBuilder = $connectionPool->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
-        $queryBuilder->getRestrictions()->removeAll();
+		// Update empty authorNames
+		$queryBuilder = $connectionPool->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
+		$queryBuilder->getRestrictions()->removeAll();
 
-        $queryBuilder
-            ->update('tx_typo3forum_domain_model_forum_post')
-            ->where($queryBuilder->expr()->eq('author_name', $queryBuilder->createNamedParameter('', Connection::PARAM_STR)))
-            ->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
-            ->set('author_name', 'Anonymous')
-            ->execute();
-        $databaseQueries[] = $queryBuilder->getSQL();
+		$queryBuilder
+			->update('tx_typo3forum_domain_model_forum_post')
+			->where($queryBuilder->expr()->eq('author_name', $queryBuilder->createNamedParameter('', Connection::PARAM_STR)))
+			->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
+			->set('author_name', 'Anonymous')
+			->execute();
+		$databaseQueries[] = $queryBuilder->getSQL();
 
-        // Update short authorNames (fetching and updating is necessary as CONCAT('Anonymous: ', "authorName")) does not work in PostgreSQL
-        $connection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionForTable('tx_typo3forum_domain_model_forum_post');
+		// Update short authorNames (fetching and updating is necessary as CONCAT('Anonymous: ', "authorName")) does not work in PostgreSQL
+		$connection = GeneralUtility::makeInstance(ConnectionPool::class)->getConnectionForTable('tx_typo3forum_domain_model_forum_post');
 
-        $queryBuilder = $connectionPool->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
-        $queryBuilder->getRestrictions()->removeAll();
+		$queryBuilder = $connectionPool->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
+		$queryBuilder->getRestrictions()->removeAll();
 
-        $selectShortAuthorNameStatement = $queryBuilder
-            ->select('uid', 'author_name')
-            ->from('tx_typo3forum_domain_model_forum_post')
-            ->where(
-                $queryBuilder->expr()->comparison(
-                    $queryBuilder->expr()->length('author_name'),
-                    ExpressionBuilder::LT,
-                    $queryBuilder->createNamedParameter(3, Connection::PARAM_INT)
-                )
-            )
-            ->andWhere($queryBuilder->expr()->neq('author_name', $queryBuilder->createNamedParameter('', Connection::PARAM_STR)))
-            ->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
-            ->execute();
+		$selectShortAuthorNameStatement = $queryBuilder
+			->select('uid', 'author_name')
+			->from('tx_typo3forum_domain_model_forum_post')
+			->where(
+				$queryBuilder->expr()->comparison(
+					$queryBuilder->expr()->length('author_name'),
+					ExpressionBuilder::LT,
+					$queryBuilder->createNamedParameter(3, Connection::PARAM_INT)
+				)
+			)
+			->andWhere($queryBuilder->expr()->neq('author_name', $queryBuilder->createNamedParameter('', Connection::PARAM_STR)))
+			->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
+			->execute();
 
-        while ($post = $selectShortAuthorNameStatement->fetch()) {
-            $connection->update(
-                'tx_typo3forum_domain_model_forum_post',
-                ['author_name' => 'Anonymous: ' . $post['author_name']],
-                ['uid' => (int)$post['uid']],
-                [Connection::PARAM_STR, Connection::PARAM_INT]
-            );
-        }
+		while ($post = $selectShortAuthorNameStatement->fetch()) {
+			$connection->update(
+				'tx_typo3forum_domain_model_forum_post',
+				['author_name' => 'Anonymous: ' . $post['author_name']],
+				['uid' => (int)$post['uid']],
+				[Connection::PARAM_STR, Connection::PARAM_INT]
+			);
+		}
 
-        $updateSuccessful = !$this->hasPostsToUpdate();
+		$updateSuccessful = !$this->hasPostsToUpdate();
 
-        if ($updateSuccessful) {
-            $this->markWizardAsDone();
-        }
+		if ($updateSuccessful) {
+			$this->markWizardAsDone();
+		}
 
-        return $updateSuccessful;
-    }
+		return $updateSuccessful;
+	}
 
-    /**
-     * Fetch the status whether there are posts to update
-     *
-     * @return bool
-     */
-    private function hasPostsToUpdate()
-    {
-        $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
-        $queryBuilder->getRestrictions()->removeAll();
+	/**
+	 * Fetch the status whether there are posts to update
+	 *
+	 * @return bool
+	 */
+	public function hasPostsToUpdate(): bool
+	{
+		$queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)->getQueryBuilderForTable('tx_typo3forum_domain_model_forum_post');
+		$queryBuilder->getRestrictions()->removeAll();
 
-        $numberOfPostsToUpdate = $queryBuilder
-            ->count('*')
-            ->from('tx_typo3forum_domain_model_forum_post')
-            ->where(
-                $queryBuilder->expr()->comparison(
-                    $queryBuilder->expr()->length('author_name'),
-                    ExpressionBuilder::LT,
-                    $queryBuilder->createNamedParameter(3, Connection::PARAM_INT)
-                )
-            )
-            ->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
-            ->execute()
-            ->fetchColumn();
+		$numberOfPostsToUpdate = $queryBuilder
+			->count('*')
+			->from('tx_typo3forum_domain_model_forum_post')
+			->where(
+				$queryBuilder->expr()->comparison(
+					$queryBuilder->expr()->length('author_name'),
+					ExpressionBuilder::LT,
+					$queryBuilder->createNamedParameter(3, Connection::PARAM_INT)
+				)
+			)
+			->andWhere($queryBuilder->expr()->eq('author', $queryBuilder->createNamedParameter(0, Connection::PARAM_INT)))
+			->execute()
+			->fetchColumn();
 
-        return (int)$numberOfPostsToUpdate > 0;
-    }
+		return (int)$numberOfPostsToUpdate > 0;
+	}
+
+	/**
+	 * Setter injection for output into upgrade wizards
+	 *
+	 * @param OutputInterface $output
+	 */
+	public function setOutput(OutputInterface $output): void
+	{
+		$this->output = $output;
+	}
+
+	/**
+	 * Marks some wizard as being "seen" so that it not shown again.
+	 *
+	 * Writes the info in LocalConfiguration.php
+	 */
+	protected function markWizardAsDone()
+	{
+		GeneralUtility::makeInstance(Registry::class)->set('installUpdate', static::class, 1);
+	}
 }
